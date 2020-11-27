@@ -76,6 +76,11 @@ function parse_command_line_arguments()
             default = -1e-4
             arg_type = Float64
 
+        "--coriolis"
+            help = "The Coriolis parameter, calculated as f=2Ω*sinϕ, where Ω is the rotation rate of the Earth in rad/s and ϕ is the latitude."
+            default = 1e-4
+            arg_type = Float64
+
         "--surface-temperature"
             help = """The temperature at the surface in ᵒC."""
             default = 20.0
@@ -116,6 +121,11 @@ function parse_command_line_arguments()
             default = true
             arg_type = Bool
 
+        "--name"
+            help = "A name to add to the end of the output filename, e.g. weak_wind_strong_cooling."
+            default = ""
+            arg_type = String
+
         "--plot-statistics"
             help = "Plot some turbulence statistics after the simulation is complete."
             default = true
@@ -152,6 +162,9 @@ slice_depth = 8.0
 
 Nh = args["Nh"]
 Nz = args["Nz"]
+f = args["coriolis"]
+hrs = args["hours"]
+name = args["name"]
 
 grid = RegularCartesianGrid(size=(Nh, Nh, Nz), x=(0, 512), y=(0, 512), z=(-256, 0))
 
@@ -160,7 +173,7 @@ grid = RegularCartesianGrid(size=(Nh, Nh, Nz), x=(0, 512), y=(0, 512), z=(-256, 
 Qᵇ = args["buoyancy-flux"]
 Qᵘ = args["momentum-flux"]
 
-prefix = @sprintf("three_layer_constant_fluxes_Qu%.1e_Qb%.1e_Nh%d_Nz%d", abs(Qᵘ), Qᵇ, grid.Nx, grid.Nz)
+prefix = @sprintf("three_layer_constant_fluxes_hr%d_Qu%.1e_Qb%.1e_f%.1e_Nh%d_Nz%d_", hrs, abs(Qᵘ), Qᵇ, f, grid.Nx, grid.Nz)*name
 data_directory = joinpath(@__DIR__, "..", "data", prefix) # save data in /data/prefix
 
 surface_layer_depth = args["surface-layer-depth"]
@@ -235,7 +248,7 @@ model = IncompressibleModel(architecture = GPU(),
                                     grid = grid,
                                  tracers = (:T, :c₀, :c₁, :c₂),
                                 buoyancy = buoyancy,
-                                coriolis = FPlane(f=1e-4),
+                                coriolis = FPlane(f=f),
                                  closure = AnisotropicMinimumDissipation(),
                      boundary_conditions = (T=θ_bcs, u=u_bcs),
                                  forcing = (u=u_sponge, v=v_sponge, w=w_sponge, T=T_sponge,
@@ -246,7 +259,7 @@ model = IncompressibleModel(architecture = GPU(),
 
 ## Noise with 8 m decay scale
 Ξ(z) = rand() * exp(z / 8)
-                    
+
 """
     initial_temperature(x, y, z)
 
@@ -276,8 +289,7 @@ set!(model, T = initial_temperature)
 # Adaptive time-stepping
 wizard = TimeStepWizard(cfl=0.8, Δt=1.0, max_change=1.1, max_Δt=30.0)
 
-stop_time = args["hours"] * hour
-
+stop_time = hrs * hour
 simulation = Simulation(model, Δt=wizard, stop_time=stop_time, iteration_interval=10,
                         progress=SimulationProgressMessenger(model, wizard))
 
@@ -407,6 +419,9 @@ if make_animation
                maximum(abs, sqrt.(E))
               ) + 1e-9
 
+    # set wlim based on maximum across all time steps
+    wlim = maximum([maximum(abs, file["timeseries/w/$(iterations[i])"]) for i=1:length(iterations)])
+
     # Finally, we're ready to animate.
 
     @info "Making an animation from the saved data..."
@@ -423,7 +438,6 @@ if make_animation
         c₀ = file["timeseries/c₀/$iter"][:, 1, :]
         c₁ = file["timeseries/c₁/$iter"][:, 1, :]
 
-        wlim = 2 * umax
         wlevels = range(-wlim, stop=wlim, length=41)
         c₀levels = range(c₀min, stop=c₀max, length=40)
         c₁levels = range(c₁min, stop=c₁max, length=40)
